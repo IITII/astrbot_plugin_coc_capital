@@ -1,0 +1,38 @@
+{
+  "apiKey": {
+    "description": "WarReport api key",
+    "hint": "WarReport 网页 F12 复制",
+    "type": "string",
+    "default": ""
+  },
+  "max_tags": {
+    "description": "部落数量限制",
+    "hint": "一条命令最多查询几个部落",
+    "type": "int",
+    "default": 15
+  },
+  "raid_cache_ttl": {
+    "description": " 突袭缓存有效时间(秒)",
+    "hint": "默认 10s",
+    "type": "int",
+    "default": 10
+  },
+  "clan_cache_ttl": {
+    "description": "部落详情缓存有效时间(秒)",
+    "hint": "默认 3600s(1h)",
+    "type": "int",
+    "default": 3600
+  },
+  "concurrency": {
+    "description": " 请求并发上限",
+    "hint": "默认 10",
+    "type": "int",
+    "default": 10
+  },
+  "ua": {
+    "description": "浏览器 UA",
+    "hint": " 浏览器 User-Agent",
+    "type": "string",
+    "default": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+  }
+}
