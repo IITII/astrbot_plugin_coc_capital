@@ -5,6 +5,7 @@ from astrbot.api import logger
 import httpx
 import asyncio
 import time
+import unicodedata
 from typing import Dict, Optional
 from datetime import datetime, timedelta
 
@@ -82,22 +83,91 @@ class CocCapitalPlugin(Star):
             "data": value
         }
 
-    def str_width(self, s):
+    def _str_width(self, s: str) -> int:
+        """计算字符串显示宽度（支持中文）"""
         w = 0
         for c in str(s):
-            w += 2 if ord(c) > 127 else 1
+            if unicodedata.east_asian_width(c) in ("F", "W"):
+                w += 2
+            else:
+                w += 1
         return w
 
-    def pad(self, s, width, align="left"):
+    def _pad(self, s, width, align="left"):
+        """按显示宽度补齐"""
         s = str(s)
-        diff = width - self.str_width(s)
-        if diff <= 0:
+        w = self._str_width(s)
+        pad = width - w
+        if pad <= 0:
             return s
 
         if align == "right":
-            return " " * diff + s
-        else:
-            return s + " " * diff
+            return " " * pad + s
+        return s + " " * pad
+
+    def json_to_table(
+            self,
+            data, headers=None, sep="  ",
+            sort_by=None, reverse=True, add_rank=False,
+    ):
+        """
+        JSON(list[dict]) 转文本表格
+
+        data: list[dict]
+        headers: [(key, title)]
+        sep: 分隔符
+        sort_by: 按某字段排序
+        reverse: 是否倒序
+        add_rank: 是否自动增加排名列
+        """
+
+        if not data:
+            return ""
+
+        data = list(data)
+
+        # 排序
+        if sort_by:
+            data.sort(key=lambda x: x.get(sort_by, 0), reverse=reverse)
+
+        # 自动排名
+        if add_rank:
+            for i, d in enumerate(data, 1):
+                d["rank"] = i
+            headers = [("rank", "排名")] + headers
+
+        if headers is None:
+            headers = [(k, k) for k in data[0].keys()]
+
+        keys = [k for k, _ in headers]
+        titles = [t for _, t in headers]
+
+        rows = []
+        rows.append(titles)
+
+        for item in data:
+            rows.append([item.get(k, "") for k in keys])
+
+        # 计算列宽
+        widths = []
+        for col in range(len(keys)):
+            widths.append(max(self._str_width(row[col]) for row in rows))
+
+        lines = []
+
+        for i, row in enumerate(rows):
+            parts = []
+            for col, val in enumerate(row):
+                align = "right" if isinstance(val, (int, float)) else "left"
+                parts.append(self._pad(val, widths[col], align))
+            lines.append(sep.join(parts))
+
+            # 表头分隔
+            if i == 0:
+                lines.append(sep.join("-" * w for w in widths))
+
+        return "\n".join(lines)
+
 
     def single_attack_medals(self, log):
         medals = []
@@ -230,27 +300,9 @@ class CocCapitalPlugin(Star):
         if not results:
             yield event.plain_result("没有查询到数据")
             return
-        # 按奖励排序
-        results.sort(key=lambda x: x["total"], reverse=True)
 
         start_time = results[0]["start"]
         end_time = results[0]["end"]
-
-        # 插入表头
-        results.insert(0, {
-            "tag": "标签",
-            "name": "部落名称",
-            "offensive": "进攻",
-            "defensive": "防守",
-            "total": "总奖励"
-        })
-
-        # 计算列宽
-        tag_width = max(self.str_width(r["tag"]) for r in results)
-        total_width = max(self.str_width(r["total"]) for r in results)
-        off_width = max(self.str_width(r["offensive"]) for r in results)
-        def_width = max(self.str_width(r["defensive"]) for r in results)
-        name_width = max(self.str_width(r["name"]) for r in results)
 
         msg_lines = [
             "🏰 突袭周末战绩",
@@ -259,23 +311,15 @@ class CocCapitalPlugin(Star):
             ""
         ]
 
-        for i, r in enumerate(results):
-
-            rank = "排名" if i == 0 else f"{i}"
-
-            line = (
-                f"{self.pad(rank, 3, 'right')} "
-                f"{self.pad(r['tag'], tag_width)}  "
-                f"{self.pad(r['total'], total_width, 'right')}  "
-                f"{self.pad(r['offensive'], off_width, 'right')}  "
-                f"{self.pad(r['defensive'], def_width, 'right')}  "
-                f"{self.pad(r['name'], name_width)}"
-            )
-
-            msg_lines.append(line)
-
-            if i == 0:
-                msg_lines.append("-" * (tag_width + total_width + off_width + def_width + name_width + 15))
+        tb_header = {
+            "tag": "标签",
+            "name": "部落名称",
+            "offensive": "进攻",
+            "defensive": "防守",
+            "total": "总奖励"
+        }
+        tb_lines = self.json_to_table(results, tb_header, " ", "total")
+        msg_lines.append(tb_lines)
 
         yield event.plain_result("\n".join(msg_lines))
 
