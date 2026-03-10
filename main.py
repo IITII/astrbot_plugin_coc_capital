@@ -129,39 +129,63 @@ def json_to_table(
 
     return "\n".join(lines)
 
+def predict_offensive_medals(season):
+    perk_medals = {1: 45, 2: 180, 3: 360, 4: 585, 5: 810, 6: 1115, 7: 1240, 8: 1260, 9: 1375, 10: 1450}
+    sub_medals = {1: 135, 2: 225, 3: 350, 4: 405, 5: 460}
 
-def single_attack_medals(log, perk_medals, sub_medals):
-    medals = []
-
-    for d in log.get("districts", []):
-        if d.get("stars") == 3:
-            # Capital Peak
-            if d.get("id") == 70000000 or d.get("name") == "Capital Peak":
-                medals.append(perk_medals.get(d.get("districtHallLevel"), 0))
-            else:
-                medals.append(sub_medals.get(d.get("districtHallLevel"), 0))
-    return medals
-
-
-def attack_medals(season):
-    perk_medals = {
-        1: 45, 2: 180, 3: 360, 4: 585, 5: 810,
-        6: 1115, 7: 1240, 8: 1260, 9: 1375, 10: 1450
-    }
-
-    sub_medals = {
-        1: 135, 2: 225, 3: 350, 4: 405, 5: 460
-    }
     total_medals = 0
     total_attacks = 0
 
     for log in season.get("attackLog", []):
-        total_medals += sum(single_attack_medals(log, perk_medals, sub_medals))
         total_attacks += log.get("attackCount", 0)
+        for d in log.get("districts", []):
+            if d.get("stars") == 3:
+                # Capital Peak
+                if d.get("id") == 70000000 or d.get("name") == "Capital Peak":
+                    total_medals += perk_medals.get(d.get("districtHallLevel"), 0)
+                else:
+                    total_medals += sub_medals.get(d.get("districtHallLevel"), 0)
 
-    if total_attacks == 0:
+    if total_attacks == 0 or total_medals == 0:
         return 0
     return ceil(total_medals / total_attacks) * 6
+
+
+# https://codeberg.org/Kuchenmampfer/ClashCliffs
+def predict_defense_reward_raw(season: dict) -> int:
+    defense_log_data = season["defenseLog"]
+    if not defense_log_data:
+        return 0
+    housing_space = 0
+    for district in defense_log_data[0]['districts']:
+        if district['id'] == 70000001:
+            housing_space += 3 * (25 + 5 * district['districtHallLevel'])
+        elif district['id'] == 70000002 and district['districtHallLevel'] > 1:
+            housing_space += 25 + 5 * district['districtHallLevel']
+        elif district['id'] == 70000005:
+            housing_space += 25 + 5 * district['districtHallLevel']
+    lower_district_weights = {}
+    upper_district_weights = {}
+    for opponent in defense_log_data:
+        for district in opponent['districts']:
+            if district['destructionPercent'] == 100:
+                lower_district_weights[district['id']] = max(district['totalLooted'] - 750,
+                                                             lower_district_weights.get(district['id'], 0))
+                upper_district_weights[district['id']] = min(district['totalLooted'],
+                                                             upper_district_weights.get(district['id'], 0))
+    district_weights = {did: (lower_district_weights[did] + upper_district_weights[did]) // 2 for did in
+                        lower_district_weights}
+    troops_killed = []
+    for opponent in defense_log_data:
+        troops_killed.append(0)
+        for district in opponent['districts']:
+            troops_killed[-1] += district['attackCount'] * housing_space
+            if district['destructionPercent'] == 100:
+                troops_killed[-1] -= (district['totalLooted'] - district_weights[district['id']]) // 3
+    if troops_killed:
+        return min(max(troops_killed) // 25, 350)
+    else:
+        return 0
 
 
 @register("astrbot_plugin_coc_capital", "COC都城", "查询多个部落的突袭币, 感谢 warreport 提供数据支持", "1.3.0")
@@ -251,6 +275,66 @@ class CocCapitalPlugin(Star):
         cache_set(self.raidCache, tag, data)
         return data
 
+    async def get_opponent_housing_space(self, client,tag) -> int:
+        clan_info = await self.fetch_clan(client, tag)
+        housing_space = 0
+        for district in clan_info["clanCapital"]['districts']:
+            if district['id'] == 70000001:
+                housing_space += 3 * (25 + 5 * district['districtHallLevel'])
+            elif district['id'] == 70000002 and district['districtHallLevel'] > 1:
+                housing_space += 25 + 5 * district['districtHallLevel']
+            elif district['id'] == 70000005:
+                housing_space += 25 + 5 * district['districtHallLevel']
+        return housing_space
+
+    # https://clashpost.com/p/5001
+    async def predict_defense_reward(self, client, season: dict):
+        defense_log_data = season["defenseLog"]
+        if not defense_log_data:
+            return 0
+        # 计算都城币
+        lower_district_weights = {}
+        upper_district_weights = {}
+        for opponent in defense_log_data:
+            for district in opponent['districts']:
+                if district['destructionPercent'] == 100:
+                    # 兵种全部满血, 都城币最多+750
+                    lower_district_weights[district['id']] = max(district['totalLooted'] - 750,
+                                                                 lower_district_weights.get(district['id'], 0))
+                    upper_district_weights[district['id']] = max(district['totalLooted'],
+                                                                 upper_district_weights.get(district['id'], 0))
+        # 这边是取所有防守记录里面的平均值. 如果对面尾刀进攻都剩很多部队的话, 这个数值会失真. 但是相对 min 和 max, 更符合实际
+        district_weights = {did: (lower_district_weights[did] + upper_district_weights[did]) // 2 for did in
+                            lower_district_weights}
+        res = []
+        for opponent in defense_log_data:
+            last_troop_full = 0
+            last_troop_empty = 0
+            last_troop_avg = 0
+            tag = opponent["attacker"]["tag"]
+            housing_space = await self.get_opponent_housing_space(client, tag)
+            for district in opponent['districts']:
+                full = district['attackCount'] * housing_space
+                last_troop_empty += full
+                last_troop_full += full
+                last_troop_avg += full
+                if district['destructionPercent'] == 100:
+                    last_troop_full -= housing_space
+                    last_troop_avg -= (district['totalLooted'] - district_weights[district['id']]) // 3
+            res.append({
+                "tag": tag,
+                "min": last_troop_full // 25,
+                "max": last_troop_empty // 25,
+                "mid": (last_troop_full + last_troop_avg) / 2 // 25,
+                "avg": last_troop_avg // 25,
+            })
+        logger.info(f"defense reward: {res}")
+        return {
+            "min": max(i["min"] for i in res),
+            "avg": max(i["avg"] for i in res),
+            "res": res
+        }
+
     async def fetch_raid(self, client, tag):
 
         data = await self.fetch_raid_raw(client, tag)
@@ -260,9 +344,15 @@ class CocCapitalPlugin(Star):
         clan_name = clan_info.get("name", "未知")
 
         raidIsEnded = season.get("state") == "ended"
-        offensive = season.get("offensiveReward", 0) * 6 if raidIsEnded else attack_medals(season)
-        defensive = season.get("defensiveReward", 0) if raidIsEnded else 0
+        offensive = season.get("offensiveReward", 0) * 6
+        defensive = season.get("defensiveReward", 0)
         total = offensive + defensive
+        predict_offensive = predict_offensive_medals(season)
+        predict_defensive = await self.predict_defense_reward(client, season)
+        predict_defensive_min = predict_defensive["min"]
+        predict_defensive_avg = predict_defensive["avg"]
+        predict_total_min = predict_offensive + predict_defensive_min
+        predict_total_avg = predict_offensive + predict_defensive_avg
 
         start = parse_time(season["startTime"])
         end = parse_time(season["endTime"])
@@ -270,9 +360,15 @@ class CocCapitalPlugin(Star):
         result = {
             "tag": f"#{tag}",
             "name": clan_name,
+            "is_end": raidIsEnded,
             "offensive": offensive,
             "defensive": defensive,
             "total": total,
+            "predict_offensive": predict_offensive,
+            "predict_defensive_min": predict_defensive_min,
+            "predict_defensive_avg": predict_defensive_avg,
+            "predict_total_min": predict_total_min,
+            "predict_total_avg": predict_total_avg,
             "start": start,
             "end": end
         }
@@ -291,7 +387,7 @@ class CocCapitalPlugin(Star):
             for attack in d["attacks"]
         })
         clan_info = await self.fetch_clan(client, clean_tag(tag))
-        logger.debug(clan_info)
+        logger.info(clan_info)
         is_open = clan_info["type"] == "open"
         return {
             "tag": tag,
@@ -356,7 +452,7 @@ class CocCapitalPlugin(Star):
 
         if len(parts) < 2:
             yield event.plain_result(
-                "查多个部落都城进攻详情\n用法: 都城 #部落标签 #部落标签\n例如: 都城 #222 #333"
+                "查多个部落都城进攻详情\n用法: 都城 #部落标签 #部落标签\n例如: 都城 #222 #333\n\n单个部落防守大于等于 44 刀必定拿满防守"
             )
             return
 
@@ -383,6 +479,7 @@ class CocCapitalPlugin(Star):
 
         start_time = results[0]["start"]
         end_time = results[0]["end"]
+        raidIsEnded = results[0]["is_end"]
 
         msg_lines = [
             "⚔️ 突袭周末进攻战绩",
@@ -391,14 +488,26 @@ class CocCapitalPlugin(Star):
             ""
         ]
 
-        tb_header = {
+        predict_header = {
+            "tag": "标签",
+            "name": "部落名称",
+            "predict_offensive": "进攻",
+            "predict_defensive_min": "保底防守",
+            "predict_defensive_avg": "预测防守",
+            "total": "保底总奖励"
+        }
+        end_header = {
             "tag": "标签",
             "name": "部落名称",
             "offensive": "进攻",
             "defensive": "防守",
             "total": "总奖励"
         }
-        tb_lines = json_to_table(results, tb_header, " ", "total")
+        # tb_header = predict_header
+        # sort_by = "predict_total_min"
+        tb_header = end_header if raidIsEnded else predict_header
+        sort_by = "total" if raidIsEnded else "predict_total_min"
+        tb_lines = json_to_table(results, tb_header, " ", sort_by)
         msg_lines.append(tb_lines)
 
         yield event.plain_result("\n".join(msg_lines))
