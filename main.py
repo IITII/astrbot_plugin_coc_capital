@@ -188,7 +188,7 @@ def predict_defense_reward_raw(season: dict) -> int:
         return 0
 
 
-@register("astrbot_plugin_coc_capital", "COC都城", "查询多个部落的突袭币, 感谢 warreport 提供数据支持", "1.3.0")
+@register("astrbot_plugin_coc_capital", "COC都城", "查询多个部落的突袭币, 感谢 warreport 提供数据支持", "1.4.0")
 class CocCapitalPlugin(Star):
 
     def __init__(self, context: Context, config: Optional[Dict] = None):
