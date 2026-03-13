@@ -9,7 +9,7 @@
     "description": "部落数量限制",
     "hint": "一条命令最多查询几个部落",
     "type": "int",
-    "default": 15
+    "default": 25
   },
   "raid_cache_ttl": {
     "description": " 突袭缓存有效时间(秒)",
@@ -19,9 +19,9 @@
   },
   "clan_cache_ttl": {
     "description": "部落详情缓存有效时间(秒)",
-    "hint": "默认 3600s(1h)",
+    "hint": "默认 600s",
     "type": "int",
-    "default": 3600
+    "default": 600
   },
   "concurrency": {
     "description": " 请求并发上限",
